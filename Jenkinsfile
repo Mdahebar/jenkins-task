@@ -98,13 +98,56 @@ pipeline {
 
     post {
         always {
-            echo "Pipeline run completed for Build #${BUILD_NUMBER}."
+            echo "=========================================="
+            echo "Build #${env.BUILD_NUMBER} ka execution complete ho gaya."
+            echo "Build URL: ${env.BUILD_URL}"
+            echo "=========================================="
+            // Workspace clean karna taaki disk full na ho
+            cleanWs deleteDirs: true, notFailBuild: true
         }
+
         success {
-            echo "STATUS: Build #${BUILD_NUMBER} DEPLOYED SUCCESSFULLY TO PRODUCTION!"
+            echo "STATUS: Build #${env.BUILD_NUMBER} successfully deploy ho chuki hai!"
+
+            // Tarika A: Jenkins Built-in Email Notification
+            mail to: 'devops-team@example.com',
+                 subject: "SUCCESS: Jenkins Build #${env.BUILD_NUMBER} - ${env.JOB_NAME}",
+                 body: """Naya version deploy ho chuka hai!
+Project: ${env.JOB_NAME}
+Build Number: #${env.BUILD_NUMBER}
+Commit: ${env.GIT_COMMIT}
+Live URL: http://<YOUR_EC2_PUBLIC_IP>
+"""
+
+            // Tarika B: Slack / Teams / Webhook Alert (Using curl)
+            sh '''
+                curl -X POST -H 'Content-type: application/json' \
+                     --data "{\\"text\\":\\"SUCCESS: Build #${BUILD_NUMBER} live ho chuka hai! URL: ${BUILD_URL}\\"}" \
+                     https://httpbin.org/post || true
+            '''
         }
+
         failure {
-            echo "ALERT: Build #${BUILD_NUMBER} FAILED! Review test logs immediately."
+            echo "ALERT: Pipeline fail ho chuki hai Build #${env.BUILD_NUMBER} par!"
+
+            // Failure Email Alert
+            mail to: 'oncall-devops@example.com',
+                 subject: "URGENT: Build #${env.BUILD_NUMBER} FAIL ho gayi!",
+                 body: """Deployment abort kar di gayi hai kyunki tests fail ho gaye.
+Job: ${env.JOB_NAME}
+Failed Commit: ${env.GIT_COMMIT}
+Console Logs: ${env.BUILD_URL}console
+"""
+
+            // Failure Webhook Ping
+            sh '''
+                curl -X POST -H 'Content-type: application/json' \
+                     --data "{\\"text\\":\\"CRITICAL: Build #${BUILD_NUMBER} fail ho gayi branch ${GIT_BRANCH} par! Check logs: ${BUILD_URL}\\"}" \
+                     https://httpbin.org/post || true
+            '''
+        }
+
+        fixed {
+            echo "RECOVERY: Pipeline wapas GREEN ho gayi hai Build #${env.BUILD_NUMBER} me!"
         }
     }
-}
