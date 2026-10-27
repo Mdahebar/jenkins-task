@@ -3,29 +3,39 @@ pipeline {
 
     options {
         timeout(time: 15, unit: 'MINUTES')
-        buildDiscarder(logRotator(numToKeepStr: '10'))
+        buildDiscarder(logRotator(numToKeepStr: '15'))
         disableConcurrentBuilds()
         timestamps()
     }
 
-    triggers {
-        pollSCM('* * * * *')
+    parameters {
+        choice(
+            name: 'DEPLOY_ACTION', 
+            choices: ['DEPLOY', 'ROLLBACK'], 
+            description: 'Naya code deploy karna hai ya purana version rollback karna hai?'
+        )
+        string(
+            name: 'ROLLBACK_VERSION', 
+            defaultValue: '', 
+            description: 'Agar ROLLBACK chuna hai, toh purana Build Number likhein (e.g., 1 ya 2)'
+        )
     }
 
     environment {
-        STAGING_DIR = '/var/www/staging'
-        PROD_DIR    = '/var/www/prod'
         LIVE_DIR    = '/var/www/html'
         RELEASE_DIR = 'build_output'
     }
 
     stages {
-        stage('Code Quality & Unit Test') {
+        stage('Code Quality Check') {
+            when {
+                expression { params.DEPLOY_ACTION == 'DEPLOY' }
+            }
             steps {
-                echo "STAGE 1: Automated Validation..."
+                echo "STAGE 1: Code Verification & Automated Tests..."
                 sh '''
                     if [ ! -s index.html ]; then
-                        echo "TEST FAILED: File is empty!"
+                        echo "TEST FAILED: File empty hai!"
                         exit 1
                     fi
                     if ! grep -q "<h1" index.html; then
@@ -37,61 +47,72 @@ pipeline {
             }
         }
 
-        stage('Package Release Bundle') {
+        stage('Package Release Artifact') {
+            when {
+                expression { params.DEPLOY_ACTION == 'DEPLOY' }
+            }
             steps {
-                echo "STAGE 2: Archiving Artifact..."
+                echo "STAGE 2: Archiving New Release Package..."
                 sh """
                     mkdir -p ${RELEASE_DIR}
-                    tar -czf ${RELEASE_DIR}/release-v${BUILD_NUMBER}.tar.gz index.html
+                    tar -czf ${RELEASE_DIR}/webapp-build-${BUILD_NUMBER}.tar.gz index.html
                 """
                 archiveArtifacts artifacts: "${RELEASE_DIR}/*.tar.gz", fingerprint: true
             }
         }
 
-        stage('Deploy to Staging (QA)') {
+        stage('Deploy New Version') {
+            when {
+                expression { params.DEPLOY_ACTION == 'DEPLOY' }
+            }
             steps {
-                echo "STAGE 3: Deploying automatically to Staging Environment..."
+                echo "STAGE 3: Deploying New Build #${BUILD_NUMBER} to Live Apache..."
                 sh """
-                    cp -f index.html ${STAGING_DIR}/index.html
-                    echo "Staging deployment complete."
+                    cp -f index.html ${LIVE_DIR}/index.html
+                    chmod 644 ${LIVE_DIR}/index.html
+                    echo "DEPLOYMENT COMPLETE: Build #${BUILD_NUMBER} is now live."
                 """
             }
         }
 
-        stage('Production Safety Gate') {
-            steps {
-                // Pipeline execution yahan ruk jayegi aur human intervention ka wait karegi
-                timeout(time: 5, unit: 'MINUTES') {
-                    input message: "Staging verify ho gaya? Kya ise PRODUCTION par deploy karein?", 
-                          ok: "Approve & Deploy to Prod",
-                          submitter: "ahebar" // Sirf aapka account approve kar sakta hai
-                }
+        stage('Execute Instant Rollback') {
+            when {
+                expression { params.DEPLOY_ACTION == 'ROLLBACK' }
             }
-        }
-
-        stage('Deploy to Production') {
             steps {
-                echo "STAGE 4: Deploying to LIVE Production Server..."
+                echo "STAGE: Rolling back to Build #${params.ROLLBACK_VERSION}..."
                 sh """
-                    # Live Apache directory par deploy
-                    cp -f index.html ${LIVE_DIR}/index.html
-                    cp -f index.html ${PROD_DIR}/index.html
+                    # Input validation
+                    if [ -z "${params.ROLLBACK_VERSION}" ]; then
+                        echo "ERROR: Rollback ke liye Build Number specify karna mandatory hai!"
+                        exit 1
+                    fi
+
+                    TARGET_ARTIFACT="/var/lib/jenkins/jobs/${JOB_NAME}/builds/${params.ROLLBACK_VERSION}/archive/${RELEASE_DIR}/webapp-build-${params.ROLLBACK_VERSION}.tar.gz"
+
+                    if [ ! -f "\$TARGET_ARTIFACT" ]; then
+                        echo "ERROR: Artifact nahi mila at \$TARGET_ARTIFACT"
+                        exit 1
+                    fi
+
+                    # Instant restoration
+                    tar -xzf "\$TARGET_ARTIFACT" -C ${LIVE_DIR}/
                     chmod 644 ${LIVE_DIR}/index.html
-                    echo "PRODUCTION DEPLOYMENT SUCCESSFUL!"
+                    echo "SUCCESS: Rollback to Build #${params.ROLLBACK_VERSION} completed instantly!"
                 """
             }
         }
     }
 
     post {
-        success {
-            echo "SUCCESS: Full deployment completed including production approval."
+        always {
+            echo "Pipeline finished execution. Action taken: ${params.DEPLOY_ACTION}"
         }
-        aborted {
-            echo "SAFETY ABORT: Production deployment was rejected or timed out. Staging remains untouched."
+        success {
+            echo "STATUS: Pipeline action executed successfully!"
         }
         failure {
-            echo "ALERT: Pipeline failed before reaching production gate."
+            echo "ALERT: Pipeline execution failed. Verify logs."
         }
     }
 }
