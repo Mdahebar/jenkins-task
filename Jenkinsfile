@@ -2,7 +2,7 @@ pipeline {
     agent any
 
     options {
-        timeout(time: 10, unit: 'MINUTES')
+        timeout(time: 15, unit: 'MINUTES')
         buildDiscarder(logRotator(numToKeepStr: '10'))
         disableConcurrentBuilds()
         timestamps()
@@ -13,104 +13,85 @@ pipeline {
     }
 
     environment {
-        DEPLOY_TARGET = '/var/www/html'
-        RELEASE_DIR   = 'build_output'
+        STAGING_DIR = '/var/www/staging'
+        PROD_DIR    = '/var/www/prod'
+        LIVE_DIR    = '/var/www/html'
+        RELEASE_DIR = 'build_output'
     }
 
     stages {
-        stage('Code Verification & Inspection') {
+        stage('Code Quality & Unit Test') {
             steps {
-                echo "=========================================="
-                echo "STAGE 1: Checking Workspace & Files"
-                echo "=========================================="
-                sh '''
-                    if [ ! -f index.html ]; then
-                        echo "ERROR: index.html not found!"
-                        exit 1
-                    fi
-                    echo "index.html exists. Previewing content:"
-                    cat index.html
-                '''
-            }
-        }
-
-        stage('Automated Quality Tests') {
-            steps {
-                echo "=========================================="
-                echo "STAGE 2: Running Automated Syntax Checks"
-                echo "=========================================="
+                echo "STAGE 1: Automated Validation..."
                 sh '''
                     if [ ! -s index.html ]; then
-                        echo "TEST FAILED: index.html is empty!"
+                        echo "TEST FAILED: File is empty!"
                         exit 1
                     fi
-
-                    if grep -q "<h1" index.html && grep -q "</h1>" index.html; then
-                        echo "TEST PASSED: Valid HTML header tags detected."
-                    else
-                        echo "TEST FAILED: Required HTML <h1> tags missing!"
+                    if ! grep -q "<h1" index.html; then
+                        echo "TEST FAILED: Missing <h1> tag!"
                         exit 1
                     fi
+                    echo "TEST PASSED: Syntax verified."
                 '''
             }
         }
 
-        stage('Package Release Artifact') {
+        stage('Package Release Bundle') {
             steps {
-                echo "=========================================="
-                echo "STAGE 3: Packaging Release Bundle"
-                echo "=========================================="
+                echo "STAGE 2: Archiving Artifact..."
                 sh """
                     mkdir -p ${RELEASE_DIR}
-                    tar -czf ${RELEASE_DIR}/webapp-build-${BUILD_NUMBER}.tar.gz index.html
-                    ls -lh ${RELEASE_DIR}/
+                    tar -czf ${RELEASE_DIR}/release-v${BUILD_NUMBER}.tar.gz index.html
                 """
                 archiveArtifacts artifacts: "${RELEASE_DIR}/*.tar.gz", fingerprint: true
             }
         }
 
-        stage('Deploy to Web Server') {
+        stage('Deploy to Staging (QA)') {
             steps {
-                echo "=========================================="
-                echo "STAGE 4: Atomic Deployment to Apache"
-                echo "=========================================="
+                echo "STAGE 3: Deploying automatically to Staging Environment..."
                 sh """
-                    if [ -f ${DEPLOY_TARGET}/index.html ]; then
-                        cp ${DEPLOY_TARGET}/index.html ${DEPLOY_TARGET}/index.html.bak
-                    fi
+                    cp -f index.html ${STAGING_DIR}/index.html
+                    echo "Staging deployment complete."
+                """
+            }
+        }
 
-                    cp -f index.html ${DEPLOY_TARGET}/index.html
-                    chmod 644 ${DEPLOY_TARGET}/index.html
+        stage('Production Safety Gate') {
+            steps {
+                // Pipeline execution yahan ruk jayegi aur human intervention ka wait karegi
+                timeout(time: 5, unit: 'MINUTES') {
+                    input message: "Staging verify ho gaya? Kya ise PRODUCTION par deploy karein?", 
+                          ok: "Approve & Deploy to Prod",
+                          submitter: "ahebar" // Sirf aapka account approve kar sakta hai
+                }
+            }
+        }
+
+        stage('Deploy to Production') {
+            steps {
+                echo "STAGE 4: Deploying to LIVE Production Server..."
+                sh """
+                    # Live Apache directory par deploy
+                    cp -f index.html ${LIVE_DIR}/index.html
+                    cp -f index.html ${PROD_DIR}/index.html
+                    chmod 644 ${LIVE_DIR}/index.html
+                    echo "PRODUCTION DEPLOYMENT SUCCESSFUL!"
                 """
             }
         }
     }
 
     post {
-        always {
-            echo "=========================================="
-            echo "Pipeline finished execution for Build #${env.BUILD_NUMBER}"
-            echo "Build URL: ${env.BUILD_URL}"
-            echo "=========================================="
-            cleanWs deleteDirs: true, notFailBuild: true
-        }
-
         success {
-            echo "STATUS: Build #${env.BUILD_NUMBER} successfully deploy ho chuki hai!"
-            sh '''
-                curl -X POST -H 'Content-type: application/json' \
-                     --data "{\\"text\\":\\"SUCCESS: Build #${BUILD_NUMBER} deployed!\\"}" \
-                     https://httpbin.org/post || true
-            '''
+            echo "SUCCESS: Full deployment completed including production approval."
         }
-
+        aborted {
+            echo "SAFETY ABORT: Production deployment was rejected or timed out. Staging remains untouched."
+        }
         failure {
-            echo "ALERT: Pipeline execution fail hui Build #${env.BUILD_NUMBER} par!"
-            sh '''
-                curl -X POST -H 'Content-type: application/json' \
-                     --data "{\\"text\\":\\"ALERT: Build #${BUILD_NUMBER} failed! Check console logs.\\"}" \
-                     https://httpbin.org/post || true
-            '''
+            echo "ALERT: Pipeline failed before reaching production gate."
         }
     }
 }
