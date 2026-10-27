@@ -2,18 +2,13 @@ pipeline {
     agent any
 
     options {
-        // Build 10 minute se zyada chale toh kill kar do
         timeout(time: 10, unit: 'MINUTES')
-        // Hard drive full hone se bachane ke liye sirf last 10 builds preserve karo
         buildDiscarder(logRotator(numToKeepStr: '10'))
-        // Do builds ek sath overlap na hon
         disableConcurrentBuilds()
-        // Har console line ke sath exact execution timestamp print karo
         timestamps()
     }
 
     triggers {
-        // Har 1 minute me GitHub repository poll karega
         pollSCM('* * * * *')
     }
 
@@ -30,7 +25,7 @@ pipeline {
                 echo "=========================================="
                 sh '''
                     if [ ! -f index.html ]; then
-                        echo "ERROR: index.html not found in repository!"
+                        echo "ERROR: index.html not found!"
                         exit 1
                     fi
                     echo "index.html exists. Previewing content:"
@@ -45,13 +40,11 @@ pipeline {
                 echo "STAGE 2: Running Automated Syntax Checks"
                 echo "=========================================="
                 sh '''
-                    # Test 1: File size check (empty file detection)
                     if [ ! -s index.html ]; then
-                        echo "TEST FAILED: index.html is completely empty!"
+                        echo "TEST FAILED: index.html is empty!"
                         exit 1
                     fi
 
-                    # Test 2: Structure verification
                     if grep -q "<h1" index.html && grep -q "</h1>" index.html; then
                         echo "TEST PASSED: Valid HTML header tags detected."
                     else
@@ -65,14 +58,13 @@ pipeline {
         stage('Package Release Artifact') {
             steps {
                 echo "=========================================="
-                echo "STAGE 3: Packaging Compressed Release Bundle"
+                echo "STAGE 3: Packaging Release Bundle"
                 echo "=========================================="
                 sh """
                     mkdir -p ${RELEASE_DIR}
                     tar -czf ${RELEASE_DIR}/webapp-build-${BUILD_NUMBER}.tar.gz index.html
                     ls -lh ${RELEASE_DIR}/
                 """
-                // Jenkins build history me archive save karna
                 archiveArtifacts artifacts: "${RELEASE_DIR}/*.tar.gz", fingerprint: true
             }
         }
@@ -83,12 +75,10 @@ pipeline {
                 echo "STAGE 4: Atomic Deployment to Apache"
                 echo "=========================================="
                 sh """
-                    # Backup existing deployment
                     if [ -f ${DEPLOY_TARGET}/index.html ]; then
                         cp ${DEPLOY_TARGET}/index.html ${DEPLOY_TARGET}/index.html.bak
                     fi
 
-                    # Deploy latest artifact
                     cp -f index.html ${DEPLOY_TARGET}/index.html
                     chmod 644 ${DEPLOY_TARGET}/index.html
                 """
@@ -99,55 +89,28 @@ pipeline {
     post {
         always {
             echo "=========================================="
-            echo "Build #${env.BUILD_NUMBER} ka execution complete ho gaya."
+            echo "Pipeline finished execution for Build #${env.BUILD_NUMBER}"
             echo "Build URL: ${env.BUILD_URL}"
             echo "=========================================="
-            // Workspace clean karna taaki disk full na ho
             cleanWs deleteDirs: true, notFailBuild: true
         }
 
         success {
             echo "STATUS: Build #${env.BUILD_NUMBER} successfully deploy ho chuki hai!"
-
-            // Tarika A: Jenkins Built-in Email Notification
-            mail to: 'devops-team@example.com',
-                 subject: "SUCCESS: Jenkins Build #${env.BUILD_NUMBER} - ${env.JOB_NAME}",
-                 body: """Naya version deploy ho chuka hai!
-Project: ${env.JOB_NAME}
-Build Number: #${env.BUILD_NUMBER}
-Commit: ${env.GIT_COMMIT}
-Live URL: http://<YOUR_EC2_PUBLIC_IP>
-"""
-
-            // Tarika B: Slack / Teams / Webhook Alert (Using curl)
             sh '''
                 curl -X POST -H 'Content-type: application/json' \
-                     --data "{\\"text\\":\\"SUCCESS: Build #${BUILD_NUMBER} live ho chuka hai! URL: ${BUILD_URL}\\"}" \
+                     --data "{\\"text\\":\\"SUCCESS: Build #${BUILD_NUMBER} deployed!\\"}" \
                      https://httpbin.org/post || true
             '''
         }
 
         failure {
-            echo "ALERT: Pipeline fail ho chuki hai Build #${env.BUILD_NUMBER} par!"
-
-            // Failure Email Alert
-            mail to: 'oncall-devops@example.com',
-                 subject: "URGENT: Build #${env.BUILD_NUMBER} FAIL ho gayi!",
-                 body: """Deployment abort kar di gayi hai kyunki tests fail ho gaye.
-Job: ${env.JOB_NAME}
-Failed Commit: ${env.GIT_COMMIT}
-Console Logs: ${env.BUILD_URL}console
-"""
-
-            // Failure Webhook Ping
+            echo "ALERT: Pipeline execution fail hui Build #${env.BUILD_NUMBER} par!"
             sh '''
                 curl -X POST -H 'Content-type: application/json' \
-                     --data "{\\"text\\":\\"CRITICAL: Build #${BUILD_NUMBER} fail ho gayi branch ${GIT_BRANCH} par! Check logs: ${BUILD_URL}\\"}" \
+                     --data "{\\"text\\":\\"ALERT: Build #${BUILD_NUMBER} failed! Check console logs.\\"}" \
                      https://httpbin.org/post || true
             '''
         }
-
-        fixed {
-            echo "RECOVERY: Pipeline wapas GREEN ho gayi hai Build #${env.BUILD_NUMBER} me!"
-        }
     }
+}
